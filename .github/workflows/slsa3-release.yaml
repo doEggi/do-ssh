@@ -1,0 +1,198 @@
+name: do-ssh slsa3 release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  actions: read
+  contents: write
+  id-token: write
+
+jobs:
+  create_release:
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.release.outputs.upload_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+
+  # 2) linux builds + upload + collect subjects
+  build_linux:
+    needs: create_release
+    runs-on: ubuntu-latest
+    outputs:
+      base64-subjects: ${{ steps.hash.outputs.base64-subjects }}
+    strategy:
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabi
+          - i686-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          
+      # install cross-compilation dependencies
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update
+          case "${{ matrix.target }}" in
+            "aarch64-unknown-linux-gnu")
+              sudo apt-get install -y gcc-aarch64-linux-gnu
+              ;;
+            "armv7-unknown-linux-gnueabi")
+              sudo apt-get install -y gcc-arm-linux-gnueabi
+              ;;
+            "i686-unknown-linux-gnu")
+              sudo apt-get install -y gcc-multilib
+              ;;
+          esac
+
+      - name: Install cross
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build with cross
+        run: |
+          cross build --locked --release --target ${{ matrix.target }}
+
+      - name: upload linux binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BIN="target/${{ matrix.target }}/release/do-ssh"
+          # Add architecture to the filename for upload
+          OUTPUT_NAME="do-ssh-${{ matrix.target }}"
+          cp "$BIN" "$OUTPUT_NAME"
+          gh release upload "${{ github.ref_name }}" "$OUTPUT_NAME" --clobber
+
+      - id: hash
+        name: generate linux‐subjects
+        run: |
+          sha256sum "target/${{ matrix.target }}/release/do-ssh" \
+            | base64 -w0 \
+            > subjects_b64.txt
+          echo "base64-subjects=$(cat subjects_b64.txt)" >> "$GITHUB_OUTPUT"
+
+  # 3) macOS builds + upload + collect subjects
+  build_macos:
+    needs: create_release
+    runs-on: macos-latest
+    outputs:
+      base64-subjects: ${{ steps.hash.outputs.base64-subjects }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: build darwin targets
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --locked --release --target "$t"
+          done
+
+      - name: upload darwin binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            BIN="target/$t/release/do-ssh" 
+            OUTPUT_NAME="do-ssh-$t"
+            cp "$BIN" "$OUTPUT_NAME"
+            gh release upload "${{ github.ref_name }}" "$OUTPUT_NAME" --clobber
+          done
+
+      - id: hash
+        name: generate darwin‐subjects
+        run: |
+          printf '' > subjects.txt
+          for f in target/*-apple-darwin/release/do-ssh; do
+            # Use shasum on macOS instead of sha256sum
+            shasum -a 256 "$f" | awk '{print $1 "  " $2}' >> subjects.txt
+          done
+          # macOS uses different base64 options
+          b64=$(base64 < subjects.txt | tr -d '\n')
+          echo "base64-subjects=$b64" >> "$GITHUB_OUTPUT"
+
+  # 4) windows build + upload + collect subjects
+  build_windows:
+    needs: create_release
+    runs-on: windows-latest
+    outputs:
+      base64-subjects: ${{ steps.hash.outputs.base64-subjects }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: build windows target
+        run: |
+          cargo build --locked --release --target x86_64-pc-windows-gnu
+
+      - name: upload windows binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          BIN="target/x86_64-pc-windows-gnu/release/do-ssh.exe"
+          OUTPUT_NAME="do-ssh-x86_64-pc-windows-gnu.exe"
+          cp "$BIN" "$OUTPUT_NAME"
+          gh release upload "${{ github.ref_name }}" "$OUTPUT_NAME" --clobber
+
+      - id: hash
+        name: generate windows‐subjects
+        shell: bash
+        run: |
+          sha256sum target/x86_64-pc-windows-gnu/release/do-ssh.exe \
+            | base64 -w0 \
+            > subjects_b64.txt
+          echo "base64-subjects=$(cat subjects_b64.txt)" >> "$GITHUB_OUTPUT"
+
+  # combine all subjects for a single attestation
+  combine_subjects:
+    needs: [build_linux, build_macos, build_windows]
+    runs-on: ubuntu-latest
+    outputs:
+      base64-subjects: ${{ steps.combine.outputs.base64-subjects }}
+    steps:
+      - id: combine
+        name: Combine all subjects
+        run: |
+          echo "${{ needs.build_linux.outputs.base64-subjects }}" > linux_subjects.b64
+          echo "${{ needs.build_macos.outputs.base64-subjects }}" > macos_subjects.b64
+          echo "${{ needs.build_windows.outputs.base64-subjects }}" > windows_subjects.b64
+          
+          # Decode all subjects
+          base64 -d linux_subjects.b64 > linux_subjects.txt
+          base64 -d macos_subjects.b64 > macos_subjects.txt
+          base64 -d windows_subjects.b64 > windows_subjects.txt
+          
+          # Combine them
+          cat linux_subjects.txt macos_subjects.txt windows_subjects.txt > all_subjects.txt
+          
+          # Encode combined subjects
+          BASE64_SUBJECTS=$(base64 -w0 < all_subjects.txt)
+          echo "base64-subjects=$BASE64_SUBJECTS" >> "$GITHUB_OUTPUT"
+
+  attest_all:
+    needs: combine_subjects
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.combine_subjects.outputs.base64-subjects }}
+      upload-assets: true
+      upload-tag-name: ${{ github.ref_name }}
