@@ -51,7 +51,7 @@ WantedBy=multi-user.target
 ```
 
 ## Note on generating keys
-Every key is a private key. The NodeId is just a public key (derive by its private counterpart). Changing the key changes the NodeId. Only servers need keys, because there NodeIds have to be persistent.
+Every key is a private key. The NodeId is just a public key (derive by its private counterpart). Changing the key changes the NodeId. Only servers need keys, because their NodeIds have to be persistent.
 The subcommand `do-ssh generate` or short `do-ssh gen` can be used to just generate private keys. Use `do-ssh -h` or `do-ssh gen -h` for more information.
 
 ## Why?
