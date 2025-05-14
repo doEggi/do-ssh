@@ -51,4 +51,19 @@ pub enum Sub {
         #[arg(short = 'o', long = "override")]
         r#override: bool,
     },
+    /// Extract public key (NodeId) from private key
+    #[command(alias = "pub")]
+    Nodeid {
+        /// Path to the private keyfile
+        #[arg(
+            short = 'k',
+            short_aliases = ['i', 'f'],
+            long = "key",
+            default_value = "key.priv"
+        )]
+        key_file: PathBuf,
+        /// Path to save the public key (optional)
+        #[arg(short = 'o', long = "output")]
+        output_file: Option<PathBuf>,
+    },
 }

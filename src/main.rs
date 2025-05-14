@@ -44,6 +44,10 @@ async fn main() -> anyhow::Result<()> {
             key_file,
             r#override,
         } => generate(key_file, r#override).await,
+        args::Sub::Nodeid {
+            key_file,
+            output_file,
+        } => extract_public_key(key_file, output_file).await,
     }
 }
 
@@ -202,4 +206,35 @@ async fn handle_connection(
     res1?;
     res2?;
     Ok(())
+}
+
+
+// produce the NodeId from a private key
+async fn extract_public_key(key_file: PathBuf, output_file: Option<PathBuf>) -> anyhow::Result<()> {
+  if !key_file.exists() {
+      bail!("The private key file {} does not exist.", key_file.display());
+  }
+
+  let key_data = tokio::fs::read(&key_file).await?;
+  if key_data.len() != 32 {
+      bail!("Invalid key file: expected 32 bytes, got {} bytes", key_data.len());
+  }
+
+  let bytes: [u8; 32] = key_data.try_into().map_err(|_| {
+      anyhow::Error::msg("Failed to convert key data to 32-byte array")
+  })?;
+
+  let secret_key = SecretKey::from_bytes(&bytes);
+
+  let node_id = NodeId::from(secret_key.public());
+
+  println!("NodeId: {}", node_id);
+  
+  if let Some(output_path) = output_file {
+      let node_id_str = node_id.to_string();
+      tokio::fs::write(&output_path, node_id_str).await?;
+      println!("NodeId written to {}", output_path.display());
+  }
+  
+  Ok(())
 }
