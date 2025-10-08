@@ -57,6 +57,7 @@ The subcommand `do-ssh generate` or short `do-ssh gen` can be used to just gener
 ## Why?
 I got a raspberry pi laying around and recently started a project. But the pi often is at a different location and behind a NAT.
 To get around this I discovered iroh to create direct connections between devices. So I created this...
+UPDATE: I am now using tailscale, which basically does the same thing but way better.
 
 ## Problems
 The delay is notable especially with poor connections.
